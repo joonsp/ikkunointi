@@ -37,6 +37,7 @@ public enum Action: Equatable, Sendable {
     case toggleFloating
     case fullscreen(mode: Int)
     case toggleSplit
+    case toggleLayout
     case pseudo
     case moveFocus(Direction)
     case swapWindow(Direction)
@@ -55,7 +56,7 @@ public enum Action: Equatable, Sendable {
     }
 
     public static let dispatcherNames = [
-        "exec", "newwindow", "killactive", "togglefloating", "fullscreen", "togglesplit", "pseudo",
+        "exec", "newwindow", "killactive", "togglefloating", "fullscreen", "togglesplit", "togglelayout", "pseudo",
         "movefocus", "swapwindow", "movewindow", "workspace", "movetoworkspace", "movetoworkspacesilent",
         "resizeactive", "cyclenext", "focusmonitor", "centerwindow", "reload", "showkeys", "exit",
     ]
@@ -96,6 +97,8 @@ public enum Action: Equatable, Sendable {
             return .fullscreen(mode: m)
         case "togglesplit":
             return .toggleSplit
+        case "togglelayout":
+            return .toggleLayout
         case "pseudo":
             return .pseudo
         case "movefocus":
@@ -141,6 +144,7 @@ public enum Action: Equatable, Sendable {
         case .toggleFloating: return "Toggle floating"
         case .fullscreen(let m): return m == 0 ? "Fullscreen" : "Maximize"
         case .toggleSplit: return "Toggle split"
+        case .toggleLayout: return "Toggle scrolling layout"
         case .pseudo: return "Pseudo tile"
         case .moveFocus(let d): return "Focus \(d.rawValue)"
         case .swapWindow(let d): return "Swap \(d.rawValue)"

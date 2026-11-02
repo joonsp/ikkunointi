@@ -28,10 +28,18 @@ public final class Workspace {
     public fileprivate(set) var fullscreen: FullscreenState?
     /// Monitor the workspace was last shown on.
     public fileprivate(set) var monitor: MonitorID?
+    /// Scrolling layout; holds the same tiled windows as `tree`, so switching is instant.
+    public let strip = ScrollStrip()
+    /// Column the scrolling viewport keeps in view. Follows keyboard focus and clicks, but
+    /// not hover focus, so focus-follows-mouse can't make the strip slide under the cursor.
+    public fileprivate(set) var scrollAnchor: WindowID?
+    /// Set by `togglelayout`; nil follows `general:layout`.
+    public fileprivate(set) var layoutOverride: LayoutKind?
 
-    init(id: Int, ratio: CGFloat) {
+    init(id: Int, ratio: CGFloat, columnWidth: CGFloat) {
         self.id = id
         tree.defaultRatio = ratio
+        strip.defaultWidth = columnWidth
     }
 
     public var windowIDs: [WindowID] { tree.windows + floating }
@@ -88,6 +96,12 @@ public final class WMState {
         didSet { workspaces.values.forEach { $0.tree.defaultRatio = splitRatio } }
     }
     public var workspaceBackAndForth: Bool
+    /// `general:layout`: layout of workspaces that were not toggled.
+    public var defaultLayout: LayoutKind = .dwindle
+    /// `scrolling:column_width` for new columns.
+    public var columnWidth: CGFloat = 0.5 {
+        didSet { workspaces.values.forEach { $0.strip.defaultWidth = columnWidth } }
+    }
 
     public init(gapsIn: CGFloat = 5, gapsOut: CGFloat = 10, splitRatio: CGFloat = 0.5, workspaceBackAndForth: Bool = false) {
         self.gapsIn = gapsIn
@@ -100,9 +114,22 @@ public final class WMState {
 
     public func workspace(_ id: Int) -> Workspace {
         if let ws = workspaces[id] { return ws }
-        let ws = Workspace(id: id, ratio: splitRatio)
+        let ws = Workspace(id: id, ratio: splitRatio, columnWidth: columnWidth)
         workspaces[id] = ws
         return ws
+    }
+
+    public func layout(of ws: Workspace) -> LayoutKind { ws.layoutOverride ?? defaultLayout }
+
+    /// Tiled windows in layout order (strip order when scrolling).
+    public func tiledOrder(_ ws: Workspace) -> [WindowID] {
+        layout(of: ws) == .scrolling ? ws.strip.windows : ws.tree.windows
+    }
+
+    /// Omarchy SUPER+L: flip a workspace between dwindle and scrolling.
+    public func toggleLayout(_ workspaceID: Int) {
+        let ws = workspace(workspaceID)
+        ws.layoutOverride = layout(of: ws) == .dwindle ? .scrolling : .dwindle
     }
 
     public func monitor(_ id: MonitorID?) -> Monitor? {
@@ -192,7 +219,9 @@ public final class WMState {
         // A new tile ends fullscreen on that workspace so it is not opened invisibly behind it.
         if let fs = ws.fullscreen, windows[fs.id]?.isFloating == false { ws.fullscreen = nil }
         refreshRects(ws)
-        ws.tree.insert(id, splitting: splitTarget(in: ws, excluding: id), fallbackArea: tilingArea(for: ws))
+        let target = splitTarget(in: ws, excluding: id)
+        ws.tree.insert(id, splitting: target, fallbackArea: tilingArea(for: ws))
+        ws.strip.insert(id, after: target)
     }
 
     private func splitTarget(in ws: Workspace, excluding id: WindowID) -> WindowID? {
@@ -204,8 +233,10 @@ public final class WMState {
 
     private func detach(_ id: WindowID, from ws: Workspace) {
         ws.tree.remove(id)
+        ws.strip.remove(id)
         ws.floating.removeAll { $0 == id }
         if ws.lastFocused == id { ws.lastFocused = nil }
+        if ws.scrollAnchor == id { ws.scrollAnchor = nil }
         if ws.fullscreen?.id == id { ws.fullscreen = nil }
     }
 
@@ -240,13 +271,15 @@ public final class WMState {
 
     // MARK: Focus
 
-    public func noteFocused(_ id: WindowID) {
+    /// `scroll: false` (hover focus) leaves the scrolling viewport where it is.
+    public func noteFocused(_ id: WindowID, scroll: Bool = true) {
         guard let w = windows[id] else { return }
         focusedWindow = id
         mru.removeAll { $0 == id }
         mru.insert(id, at: 0)
         let ws = workspace(w.workspace)
         ws.lastFocused = id
+        if scroll, !w.isFloating { ws.scrollAnchor = id }
         if let m = monitorShowing(ws.id) { focusedMonitor = m }
         if let fs = ws.fullscreen, fs.id != id, !w.isFloating { ws.fullscreen = nil }
     }
@@ -356,6 +389,7 @@ public final class WMState {
             insert(id, into: ws)
         } else {
             ws.tree.remove(id)
+            ws.strip.remove(id)
             w.isFloating = true
             let area = homeMonitor(for: ws).visibleFrame
             if w.floatingFrame.map({ !area.intersects($0) }) ?? true {
@@ -390,6 +424,12 @@ public final class WMState {
     public func resizeTiled(_ id: WindowID, dx: CGFloat, dy: CGFloat) {
         guard let w = windows[id], !w.isFloating else { return }
         let ws = workspace(w.workspace)
+        if layout(of: ws) == .scrolling {
+            // Columns only have a width; height always fills the screen.
+            let area = tilingArea(for: ws)
+            ws.strip.resize(id, by: dx / (area.width + 2 * gapsIn))
+            return
+        }
         refreshRects(ws)
         ws.tree.resize(id, dx: dx, dy: dy)
     }
@@ -399,6 +439,14 @@ public final class WMState {
     public func moveEdge(_ id: WindowID, edge: Edge, to coordinate: CGFloat) -> Bool {
         guard let w = windows[id], !w.isFloating else { return false }
         let ws = workspace(w.workspace)
+        if layout(of: ws) == .scrolling {
+            guard edge == .left || edge == .right else { return false }
+            let area = tilingArea(for: ws)
+            guard let f = ws.strip.layout(in: area, gapsIn: gapsIn, focus: nil, include: isFocusable)[id] else { return false }
+            let w = edge == .right ? coordinate - f.minX : f.maxX - coordinate
+            ws.strip.setWidth(id, ws.strip.fraction(forPixelWidth: w, area: area, gapsIn: gapsIn))
+            return true
+        }
         refreshRects(ws)
         // The divider sits gapsIn outside the window edge.
         let divider: CGFloat
@@ -414,11 +462,14 @@ public final class WMState {
         guard var wa = windows[a], var wb = windows[b], a != b, !wa.isFloating, !wb.isFloating else { return }
         if wa.workspace == wb.workspace {
             workspace(wa.workspace).tree.swap(a, b)
+            workspace(wa.workspace).strip.swap(a, b)
             return
         }
         let wsA = workspace(wa.workspace), wsB = workspace(wb.workspace)
         wsA.tree.replace(a, with: b)
         wsB.tree.replace(b, with: a)
+        wsA.strip.replace(a, with: b)
+        wsB.strip.replace(b, with: a)
         if wsA.lastFocused == a { wsA.lastFocused = b }
         if wsB.lastFocused == b { wsB.lastFocused = a }
         if wsA.fullscreen?.id == a { wsA.fullscreen = nil }
@@ -433,6 +484,10 @@ public final class WMState {
     @discardableResult
     public func swapInDirection(_ id: WindowID, _ direction: Direction) -> Bool {
         guard let w = windows[id], !w.isFloating else { return false }
+        if let other = columnNeighbor(of: id, direction) {
+            swapWindows(id, other)
+            return true
+        }
         switch neighbor(of: id, direction, tiledOnly: true) {
         case .window(let other)?:
             swapWindows(id, other)
@@ -463,6 +518,8 @@ public final class WMState {
 
     /// The window (or empty monitor) in `direction` from `id` (or from the focused monitor's center).
     public func neighbor(of id: WindowID?, _ direction: Direction, tiledOnly: Bool = false) -> FocusTarget? {
+        // In the scrolling layout left/right walk the strip, including scrolled-away columns.
+        if let id, let next = columnNeighbor(of: id, direction) { return .window(next) }
         let frames = visibleFrames(tiledOnly: tiledOnly)
         let sourceMonitor = monitor(id.flatMap { windows[$0] }.flatMap { monitorShowing($0.workspace) } ?? focusedMonitor) ?? primaryMonitor
         let source: CGRect
@@ -479,6 +536,14 @@ public final class WMState {
             return .window(hit)
         }
         return monitorTarget(from: sourceMonitor, direction)
+    }
+
+    /// Adjacent column for left/right on a scrolling workspace; nil at the strip's ends.
+    private func columnNeighbor(of id: WindowID, _ direction: Direction) -> WindowID? {
+        guard direction.isHorizontal, let w = windows[id], !w.isFloating else { return nil }
+        let ws = workspace(w.workspace)
+        guard layout(of: ws) == .scrolling else { return nil }
+        return ws.strip.neighbor(of: id, step: direction == .left ? -1 : 1, include: isFocusable)
     }
 
     private func monitorTarget(from m: Monitor, _ direction: Direction) -> FocusTarget? {
@@ -499,7 +564,7 @@ public final class WMState {
     /// `cyclenext`: next window of the focused workspace in layout order.
     public func cycle(previous: Bool) -> WindowID? {
         let ws = workspace(focusedWorkspace)
-        let ids = ws.windowIDs.filter(isFocusable)
+        let ids = (tiledOrder(ws) + ws.floating).filter(isFocusable)
         guard !ids.isEmpty else { return nil }
         guard let f = focusedWindow, let i = ids.firstIndex(of: f) else { return ids.first }
         return ids[(i + (previous ? -1 : 1) + ids.count) % ids.count]
@@ -512,7 +577,20 @@ public final class WMState {
     public func tiledFramesIfShown(_ workspaceID: Int) -> [WindowID: CGRect] {
         let ws = workspace(workspaceID)
         let area = homeMonitor(for: ws).visibleFrame.insetBy(dx: gapsOut, dy: gapsOut)
+        if layout(of: ws) == .scrolling {
+            // Restoring on quit: fan columns out over the screen rather than off it.
+            let frames = ws.strip.layout(in: area, gapsIn: gapsIn, focus: nil, include: { [unowned self] in self.isFocusable($0) })
+            return frames.mapValues { $0.translated(from: $0, to: area) }
+        }
         return ws.tree.layout(in: area, gapsIn: gapsIn, include: { [unowned self] in self.isFocusable($0) })
+    }
+
+    /// A scrolled column may hang off the screen edge (macOS allows that) but must not be
+    /// entirely off screen, nor reach onto a neighbouring monitor; otherwise it is parked.
+    private func columnCanShow(_ f: CGRect, on mon: Monitor) -> Bool {
+        let visible = f.intersection(mon.visibleFrame)
+        guard !visible.isNull, visible.width >= 24 else { return false }
+        return !monitors.contains { $0.id != mon.id && $0.frame.intersects(f) }
     }
 
     /// Where every window should be right now.
@@ -525,11 +603,24 @@ public final class WMState {
                 continue
             }
             let area = mon.visibleFrame.insetBy(dx: gapsOut, dy: gapsOut)
-            let frames = ws.tree.layout(in: area, gapsIn: gapsIn, include: { [unowned self] in self.isFocusable($0) })
+            let scrolling = layout(of: ws) == .scrolling
+            let include: (WindowID) -> Bool = { [unowned self] in self.isFocusable($0) }
+            let frames: [WindowID: CGRect]
+            if scrolling {
+                // Follow the focused column; a focused floating window keeps the view where it is.
+                let anchor = ws.scrollAnchor.flatMap { ws.strip.contains($0) ? $0 : nil }
+                frames = ws.strip.layout(in: area, gapsIn: gapsIn, focus: anchor, include: include)
+            } else {
+                frames = ws.tree.layout(in: area, gapsIn: gapsIn, include: include)
+            }
             func fullscreenFrame(_ mode: Int) -> CGRect { mode == 0 ? mon.visibleFrame : area }
             for id in ws.tree.windows {
                 guard let w = windows[id] else { continue }
                 guard !w.isExcluded, var f = frames[id] else { out[id] = .excluded; continue }
+                if scrolling, ws.fullscreen?.id != id, !columnCanShow(f, on: mon) {
+                    out[id] = .hidden(mon.id)
+                    continue
+                }
                 if let fs = ws.fullscreen, fs.id == id {
                     f = fullscreenFrame(fs.mode)
                 } else if w.isPseudo, let s = w.initialSize {

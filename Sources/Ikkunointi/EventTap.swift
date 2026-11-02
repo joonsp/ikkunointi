@@ -22,6 +22,7 @@ protocol EventTapDelegate: AnyObject {
     func tapContinueDrag(to point: CGPoint)
     func tapEndDrag(at point: CGPoint)
     func tapMouseUp(at point: CGPoint)
+    func tapMouseMoved(to point: CGPoint)
 }
 
 /// A session event tap running on its own thread, so a slow Accessibility call on the main
@@ -34,6 +35,9 @@ final class EventTap {
     private var keys: [KeyCombo: TapBinding] = [:]
     private var mouse: [MouseCombo: MouseAction] = [:]
     private var superKey: SuperKey = .capslock
+    private var followMouse = false
+    private var pendingMovePoint: CGPoint?
+    private var moveFlushScheduled = false
 
     // Only touched on the tap thread.
     private var swallowedKeyUps = Set<UInt16>()
@@ -55,18 +59,19 @@ final class EventTap {
 
     var isRunning: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
 
-    func configure(keys: [KeyCombo: TapBinding], mouse: [MouseCombo: MouseAction], superKey: SuperKey) {
+    func configure(keys: [KeyCombo: TapBinding], mouse: [MouseCombo: MouseAction], superKey: SuperKey, followMouse: Bool) {
         lock.lock()
         self.keys = keys
         self.mouse = mouse
         self.superKey = superKey
+        self.followMouse = followMouse
         lock.unlock()
     }
 
     func start() -> Bool {
         if tap != nil { return true }
         let types: [CGEventType] = [.keyDown, .keyUp, .leftMouseDown, .leftMouseUp, .leftMouseDragged,
-                                    .rightMouseDown, .rightMouseUp, .rightMouseDragged]
+                                    .rightMouseDown, .rightMouseUp, .rightMouseDragged, .mouseMoved]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << CGEventMask($1.rawValue)) }
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: mask, callback: eventTapCallback,
@@ -161,8 +166,31 @@ final class EventTap {
             }
             return pass
 
+        case .mouseMoved:
+            queueMove(event.location)
+            return pass
+
         default:
             return pass
+        }
+    }
+
+    /// Hover focus: hand the latest cursor position to the main thread, at most one pending.
+    private func queueMove(_ p: CGPoint) {
+        lock.lock()
+        guard followMouse else { lock.unlock(); return }
+        pendingMovePoint = p
+        let schedule = !moveFlushScheduled
+        moveFlushScheduled = true
+        lock.unlock()
+        guard schedule else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let point = self.pendingMovePoint
+            self.moveFlushScheduled = false
+            self.lock.unlock()
+            if let point { self.delegate?.tapMouseMoved(to: point) }
         }
     }
 

@@ -19,6 +19,11 @@ public enum DefaultConfig {
             #   rcmd / ropt / rctrl   only the right-hand modifier
             #   cmd / alt / ctrl / ctrl+alt
             super_key = capslock
+            follow_mouse = 1         # 1: hovering a window focuses it, 0: click to focus
+        }
+
+        cursor {
+            no_warps = false         # false: keyboard focus moves the cursor to the window
         }
 
         general {
@@ -26,6 +31,7 @@ public enum DefaultConfig {
             gaps_out = 10            # between windows and the screen edge
             border_size = 2          # focus border, 0 disables it
             col.active_border = rgba(33ccffee) rgba(00ff99ee) 45deg
+            layout = dwindle         # dwindle or scrolling (SUPER+L toggles per workspace)
         }
 
         decoration {
@@ -34,6 +40,10 @@ public enum DefaultConfig {
 
         dwindle {
             default_split_ratio = 1.0   # 0.1 - 1.9, like Hyprland (1.0 = even split)
+        }
+
+        scrolling {
+            column_width = 0.5          # share of the screen a new column takes
         }
 
         binds {
@@ -58,6 +68,7 @@ public enum DefaultConfig {
         bindd = SUPER, F, Fullscreen, fullscreen, 0
         bindd = SUPER ALT, F, Maximize, fullscreen, 1
         bindd = SUPER, J, Toggle split, togglesplit,
+        bindd = SUPER, L, Toggle scrolling layout, togglelayout,
         bindd = SUPER, P, Pseudo tile, pseudo,
         bindd = SUPER, C, Center floating window, centerwindow,
         bindd = SUPER, K, Show key bindings, showkeys,
@@ -96,6 +107,7 @@ public enum DefaultConfig {
         s += """
 
         # Resize. MINUS / EQUAL are the two keys right of 0 (+ and ´ on Nordic layouts).
+        # In the scrolling layout SUPER+MINUS / EQUAL change the column width.
         binde = SUPER, MINUS, resizeactive, -100 0
         binde = SUPER, EQUAL, resizeactive, 100 0
         binde = SUPER SHIFT, MINUS, resizeactive, 0 -100

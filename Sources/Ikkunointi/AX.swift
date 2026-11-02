@@ -152,6 +152,22 @@ enum WindowList {
         return !list.isEmpty
     }
 
+    /// The window under the cursor if it is the topmost thing there: nil when a menu, popup,
+    /// panel or the menu bar covers the point. `ignoring` skips our own overlay windows.
+    static func topmostNormalWindow(at point: CGPoint, ignoring: Set<CGWindowID>) -> CGWindowID? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        for info in list {
+            guard let id = info[kCGWindowNumber as String] as? CGWindowID, !ignoring.contains(id),
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict), bounds.contains(point) else { continue }
+            if (info[kCGWindowAlpha as String] as? Double ?? 1) == 0 { continue }
+            return (info[kCGWindowLayer as String] as? Int) == 0 ? id : nil
+        }
+        return nil
+    }
+
     /// Topmost normal-level window under a point (global top-left coordinates).
     static func windowID(at point: CGPoint) -> CGWindowID? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {

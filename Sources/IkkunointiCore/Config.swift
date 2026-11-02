@@ -135,6 +135,13 @@ public struct Config {
     /// Fraction of a split given to the first child.
     public var splitRatio: Double = 0.5
     public var workspaceBackAndForth = false
+    public var layout: LayoutKind = .dwindle
+    /// `input:follow_mouse`: hovering a window focuses it.
+    public var followMouse = true
+    /// `cursor:no_warps = false`: keyboard focus changes move the cursor to the window's center.
+    public var warpCursor = true
+    /// Fraction of the screen a new column takes in the scrolling layout.
+    public var columnWidth: Double = 0.5
     public var keyBindings: [KeyBinding] = []
     public var mouseBindings: [MouseBinding] = []
     public var windowRules: [WindowRule] = []
@@ -432,7 +439,16 @@ private struct Parser {
                 error("general:col.active_border: cannot parse '\(value)'")
             }
         case "general:layout":
-            if value.lowercased() != "dwindle" { warn("only the dwindle layout is supported") }
+            if let l = LayoutKind(rawValue: value.lowercased()) { config.layout = l } else {
+                error("general:layout: '\(value)' is not supported (dwindle, scrolling)")
+            }
+        case "input:follow_mouse":
+            // Hyprland: 0 off, 1-3 various follow modes; all non-zero follow here.
+            if let v = number() { config.followMouse = v != 0 }
+        case "cursor:no_warps":
+            if let b = bool() { config.warpCursor = !b }
+        case "scrolling:column_width", "plugin:hyprscrolling:column_width":
+            if let v = number() { config.columnWidth = min(max(v, 0.1), 1.0) }
         case "decoration:rounding":
             if let v = number() { config.rounding = max(0, v) }
         case "dwindle:default_split_ratio":

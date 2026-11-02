@@ -182,7 +182,7 @@ extension WindowManager {
     private func workspaceInfos() -> [[String: Any]] {
         workspaceSummaries().filter { $0.windowCount > 0 || $0.isVisible }.map { s in
             let ws = state.workspace(s.id)
-            return ["id": s.id, "windows": s.windowCount, "apps": s.apps, "focused": s.isFocused, "visible": s.isVisible,
+            return ["id": s.id, "layout": state.layout(of: ws).rawValue, "windows": s.windowCount, "apps": s.apps, "focused": s.isFocused, "visible": s.isVisible,
                     "monitor": Int(state.monitorShowing(s.id) ?? ws.monitor ?? 0), "lastFocused": Int(ws.lastFocused ?? 0)]
         }
     }
@@ -193,7 +193,7 @@ extension WindowManager {
         if i["focused"] as? Bool == true { flags.append("focused") }
         if i["visible"] as? Bool == true { flags.append("visible on monitor \(i["monitor"]!)") }
         let apps = (i["apps"] as? [String] ?? []).joined(separator: ", ")
-        return "workspace \(id): \(i["windows"]!) window(s)\(apps.isEmpty ? "" : " — \(apps)")\(flags.isEmpty ? "" : "  (\(flags.joined(separator: ", ")))")"
+        return "workspace \(id) [\(i["layout"] ?? "")]: \(i["windows"]!) window(s)\(apps.isEmpty ? "" : " — \(apps)")\(flags.isEmpty ? "" : "  (\(flags.joined(separator: ", ")))")"
     }
 
     private func render(_ items: [[String: Any]], json: Bool, single: Bool = false, text: ([String: Any]) -> String) -> String {

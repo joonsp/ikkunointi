@@ -3,10 +3,12 @@
 Hyprland / Omarchy-style tiling window management for macOS. *Ikkunointi* is Finnish for "windowing".
 
 - **Dwindle tiling** like Hyprland: every new window splits the focused tile along its longer side. Gaps, a gradient focus border, `togglesplit`, pseudo-tiling, fullscreen, floating windows.
+- **Scrolling layout** (Omarchy's SUPER + L): per workspace, windows become columns in an endless horizontal strip, niri/PaperWM-style. A new window opens to the right of the focused one instead of halving it, and the view scrolls to keep the focused column on screen.
 - **Workspaces 1–10** with Omarchy's key bindings. They are virtual, AeroSpace-style: windows on hidden workspaces are parked off-screen. That is instant and needs no SIP changes.
 - **Caps Lock as SUPER.** It is remapped while the app runs and restored on quit. Option keeps typing `@ [ ] { } | \ $` on Nordic layouts.
 - **`hyprland.conf` syntax**: `bind`/`bindd`/`binde`/`bindm`, `$variables`, sections, `windowrule`, `exec-once`, `source`. The config reloads on save.
 - **`ikkunointictl`**: a `hyprctl` equivalent for scripting (`dispatch`, `clients`, `workspaces`, …).
+- **Focus follows mouse** (`input:follow_mouse = 1`): hovering a window focuses it. Keyboard focus changes move the cursor to the focused window's center (`cursor:no_warps = false`).
 - **Mouse**: SUPER + drag moves a window. Dropping it on a tile swaps the two. SUPER + right-drag resizes. Dragging or resizing a tile by its title bar or edges also works.
 - **Menu bar workspace indicator** (Waybar-style) and an Omarchy-style key binding cheat sheet (SUPER + K).
 
@@ -42,6 +44,7 @@ SUPER is Caps Lock by default; change it with `input:super_key`.
 | SUPER + T | Toggle floating |
 | SUPER + F / SUPER + Alt + F | Fullscreen / maximize (inside gaps) |
 | SUPER + J | Toggle split direction |
+| SUPER + L | Toggle the workspace between dwindle and scrolling |
 | SUPER + P | Pseudo-tile (keep the window's own size, centered in its tile) |
 | SUPER + C | Center floating window |
 | SUPER + K | Show key bindings |
@@ -51,7 +54,7 @@ SUPER is Caps Lock by default; change it with `input:super_key`.
 | SUPER + Shift + 1…0 | Move window to workspace (and follow) |
 | SUPER + Tab / Shift + Tab | Next / previous non-empty workspace |
 | SUPER + Ctrl + Tab | Previous workspace (back and forth) |
-| SUPER + − / = | Shrink / grow width. These are the two keys right of 0: `+` and `´` on Finnish. |
+| SUPER + − / = | Shrink / grow width (column width in scrolling). These are the two keys right of 0: `+` and `´` on Finnish. |
 | SUPER + Shift + − / = | Shrink / grow height |
 | SUPER + drag / right-drag | Move / resize window |
 
@@ -62,13 +65,17 @@ SUPER is Caps Lock by default; change it with `input:super_key`.
 ```ini
 input {
     super_key = capslock      # capslock, rcmd, ropt, rctrl, cmd, alt, ctrl, ctrl+alt
+    follow_mouse = 1          # 0: click to focus
 }
+cursor { no_warps = false }   # true: keyboard focus leaves the cursor where it is
 general {
     gaps_in = 5
     gaps_out = 10
     border_size = 2
     col.active_border = rgba(33ccffee) rgba(00ff99ee) 45deg
+    layout = dwindle          # or scrolling
 }
+scrolling { column_width = 0.5 }
 decoration { rounding = 12 }
 dwindle { default_split_ratio = 1.0 }
 binds { workspace_back_and_forth = false }
@@ -98,7 +105,7 @@ source = ~/.config/ikkunointi/extra.conf
 | `exec` | shell command (Homebrew paths are on `PATH`) |
 | `newwindow` | bundle id or app name: sends ⌘N to the running app, or launches it |
 | `killactive` | |
-| `togglefloating`, `togglesplit`, `pseudo`, `centerwindow` | |
+| `togglefloating`, `togglesplit`, `togglelayout`, `pseudo`, `centerwindow` | |
 | `fullscreen` | `0` covers the screen, `1` maximizes inside the gaps |
 | `movefocus`, `swapwindow` (alias `movewindow`), `focusmonitor` | `l` `r` `u` `d` |
 | `workspace` | `N`, `+1`/`-1`, `e+1`/`e-1` (non-empty only), `previous` |
@@ -130,7 +137,9 @@ ikkunointictl reload
 - When an app turns on **Secure Keyboard Entry**, for example password prompts or Terminal's secure-input option, macOS stops delivering keys to event taps. Hotkeys pause, and the menu bar item shows `!`.
 - Windows with a minimum size larger than their tile overflow it.
 - There are no animations. Native fullscreen windows (green button) live in their own Space and are skipped by the tiler.
-- Only the dwindle layout exists. There are no special workspaces, groups or pinning.
+- Layouts are dwindle and scrolling (one window per column). There is no master layout, and there are no special workspaces, groups or pinning.
+- Focusing a window on macOS raises it, so hovering a tile brings it above an overlapping floating window. In Hyprland, floating windows stay on top.
+- In the scrolling layout, columns scrolled fully out of view are parked like hidden workspaces. Columns that are partly visible hang off the screen edge.
 
 ## Development
 

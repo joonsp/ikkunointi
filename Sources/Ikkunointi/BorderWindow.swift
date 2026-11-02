@@ -66,6 +66,8 @@ final class BorderWindow {
         window.orderFrontRegardless()
     }
 
+    var windowID: CGWindowID { CGWindowID(max(0, window.windowNumber)) }
+
     func hide() {
         window.orderOut(nil)
     }

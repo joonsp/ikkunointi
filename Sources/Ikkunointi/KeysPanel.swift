@@ -10,6 +10,8 @@ final class KeysPanel: NSObject, NSWindowDelegate {
         show(rows: rows, screenFrame: screenFrame)
     }
 
+    var isOpen: Bool { panel != nil }
+
     func close() {
         panel?.delegate = nil
         panel?.orderOut(nil)

@@ -79,6 +79,10 @@ final class WindowManager {
     private var autoFocusGuardUntil = Date.distantPast
     private var newWindowRequests: [pid_t: Date] = [:]
 
+    /// True while a key binding / ctl dispatch runs: its focus changes warp the cursor.
+    private var inKeyboardAction = false
+    private var lastHoverCheck = Date.distantPast
+
     private var drag: DragState?
     private var nativeDragWindow: CGWindowID?
     private var snapBackHistory: [CGWindowID: [Date]] = [:]
@@ -106,6 +110,8 @@ final class WindowManager {
         state.gapsOut = CGFloat(config.gapsOut)
         state.splitRatio = CGFloat(config.splitRatio)
         state.workspaceBackAndForth = config.workspaceBackAndForth
+        state.defaultLayout = config.layout
+        state.columnWidth = CGFloat(config.columnWidth)
         border.configure(width: CGFloat(config.borderSize), radius: CGFloat(config.rounding), gradient: config.activeBorder)
         if started { applyLayout() }
     }
@@ -516,18 +522,43 @@ final class WindowManager {
                 WindowFocus.activate(pid: ownPID)
                 NSApp.activate(ignoringOtherApps: true)
             }
+            if inKeyboardAction, config.warpCursor, let mon = state.monitor(m) { warpCursor(to: mon.visibleFrame.center) }
             updateBorder()
             notifyChange()
         }
     }
 
-    func focusWindow(_ id: CGWindowID) {
+    /// `fromHover`: focus-follows-mouse; the scrolling viewport stays put and the cursor isn't moved.
+    func focusWindow(_ id: CGWindowID, fromHover: Bool = false) {
         guard let rec = records[id] else { return }
-        state.noteFocused(id)
+        state.noteFocused(id, scroll: !fromHover)
+        // Scrolling layout: bring the column into view (unparks it) before raising it.
+        applyLayout()
         expectedFocus = (id, Date() + 0.6)
         WindowFocus.focus(pid: rec.watcher.pid, windowID: id, element: rec.element)
         updateBorder()
         notifyChange()
+        if inKeyboardAction, !fromHover, config.warpCursor, let f = rec.element.frame { warpCursor(to: f.center) }
+    }
+
+    /// Hyprland's cursor warp: keyboard focus changes put the pointer in the window's center.
+    private func warpCursor(to p: CGPoint) {
+        CGWarpMouseCursorPosition(p)
+        // Without this the cursor freezes briefly after a warp.
+        CGAssociateMouseAndMouseCursorPosition(1)
+    }
+
+    /// Hyprland `follow_mouse = 1`: hovering a window focuses it.
+    func mouseMoved(to p: CGPoint) {
+        guard config.followMouse, drag == nil, nativeDragWindow == nil, NSEvent.pressedMouseButtons == 0,
+              !keysPanel.isOpen else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastHoverCheck) > 0.025 else { return }
+        lastHoverCheck = now
+        guard let id = WindowList.topmostNormalWindow(at: p, ignoring: [border.windowID]),
+              id != state.focusedWindow, let rec = records[id], !rec.isParked,
+              let w = state.windows[id], !w.isExcluded, state.isVisible(w.workspace) else { return }
+        focusWindow(id, fromHover: true)
     }
 
     func switchWorkspace(_ n: Int) {
@@ -793,6 +824,8 @@ final class WindowManager {
 
     func perform(_ action: Action) {
         flush()
+        inKeyboardAction = true
+        defer { inKeyboardAction = false }
         let focused = state.focusedWindow
         let rec = focused.flatMap { records[$0] }
         switch action {
@@ -817,6 +850,10 @@ final class WindowManager {
             guard let id = focused else { return }
             state.toggleSplit(id)
             applyLayout()
+        case .toggleLayout:
+            state.toggleLayout(state.focusedWorkspace)
+            applyLayout()
+            if let id = focused { focusWindow(id) }
         case .pseudo:
             guard let id = focused else { return }
             state.togglePseudo(id)

@@ -109,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
             let button = m.button == .left ? "drag" : m.button == .right ? "right-drag" : "middle-drag"
             rows.append((mods.symbols(superKey: config.superKey) + " " + button, m.action == .move ? "Move window" : "Resize window"))
         }
-        tap.configure(keys: keys, mouse: mouse, superKey: config.superKey)
+        tap.configure(keys: keys, mouse: mouse, superKey: config.superKey, followMouse: config.followMouse)
         manager.bindingRows = rows
     }
 
@@ -166,4 +166,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
     func tapContinueDrag(to point: CGPoint) { manager.continueDrag(to: point) }
     func tapEndDrag(at point: CGPoint) { manager.endDrag(at: point) }
     func tapMouseUp(at point: CGPoint) { manager.mouseUp(at: point) }
+    func tapMouseMoved(to point: CGPoint) { manager.mouseMoved(to: point) }
 }
