@@ -40,7 +40,9 @@ final class ClaudeStatusLineHookTests: XCTestCase {
         let json = try! JSONSerialization.data(withJSONObject: ["theme": "dark", "statusLine": ["type": "command", "command": original, "padding": 2]])
         try! json.write(to: settingsURL)
         let hook = ClaudeStatusLineHook(home: home)
+        XCTAssertFalse(hook.isInstalled)
         XCTAssertEqual(hook.install(), .installed)
+        XCTAssertTrue(hook.isInstalled)
         XCTAssertEqual(hook.install(), .alreadyInstalled)
         let line = settings()["statusLine"] as! [String: Any]
         XCTAssertEqual(line["padding"] as? Int, 2)
@@ -56,6 +58,7 @@ final class ClaudeStatusLineHookTests: XCTestCase {
 
         XCTAssertEqual(hook.uninstall(), .removed)
         XCTAssertEqual((settings()["statusLine"] as! [String: Any])["command"] as? String, original)
+        XCTAssertFalse(hook.isInstalled)
         XCTAssertEqual(hook.uninstall(), .notInstalled)
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude/settings.json.ikkunointi-backup").path))
     }

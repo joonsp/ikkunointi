@@ -28,6 +28,8 @@ final class StatusBar: NSObject, NSMenuDelegate {
     private let usageQueue = DispatchQueue(label: "ikkunointi.claude-usage", qos: .utility)
     private var usageTimer: Timer?
     private var usageTick = 0
+    private let claudeHook = ClaudeStatusLineHook()
+    private static let claudeAskedKey = "claudeSettingsAsked"
     private var tokensToday: TokenUsage?
     private static let hideUsageKey = "hideClaudeUsage"
     private var showUsage: Bool {
@@ -77,6 +79,14 @@ final class StatusBar: NSObject, NSMenuDelegate {
         }
         applyUsageVisibility()
         render()
+        // First run with Claude Code around: offer the settings change once, never do it unasked.
+        if showUsage, !UserDefaults.standard.bool(forKey: Self.claudeAskedKey),
+           claudeHook.isClaudeCodePresent, !claudeHook.isInstalled {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                UserDefaults.standard.set(true, forKey: Self.claudeAskedKey)
+                self?.offerClaudeSetup()
+            }
+        }
     }
 
     static var secureInputApp: String? {
@@ -203,6 +213,11 @@ final class StatusBar: NSObject, NSMenuDelegate {
             self.applyUsageVisibility()
         }
         usage.state = showUsage ? .on : .off
+        if claudeHook.isInstalled {
+            add("Restore Claude Settings…") { [weak self] in self?.offerClaudeRestore() }
+        } else if claudeHook.isClaudeCodePresent {
+            add("Modify Claude Settings…") { [weak self] in self?.offerClaudeSetup() }
+        }
         if tiling {
             menu.addItem(.separator())
             add("Show Key Bindings") { [weak self] in self?.onShowKeys?() }
@@ -330,20 +345,53 @@ final class StatusBar: NSObject, NSMenuDelegate {
         usageItem.isVisible = showUsage
         usageTimer?.invalidate()
         usageTimer = nil
-        // The indicator's data comes through a wrapper around Claude Code's status line;
-        // it is set up and removed together with the indicator.
-        let show = showUsage
-        usageQueue.async {
-            let hook = ClaudeStatusLineHook()
-            let outcome = show ? hook.install() : hook.uninstall()
-            NSLog("Ikkunointi: Claude status line hook: %@", "\(outcome)")
-        }
         guard showUsage else { return }
         usageTick = 0
         refreshUsage()
         let t = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.refreshUsage() }
         RunLoop.main.add(t, forMode: .common)
         usageTimer = t
+    }
+
+    /// Explains the settings change and makes it only if the user agrees.
+    private func offerClaudeSetup() {
+        let alert = NSAlert()
+        alert.messageText = "Let Ikkunointi modify Claude Code's settings?"
+        alert.informativeText = [
+            "Claude Code only reports how much of your plan is left to its status line. To show that in the menu bar, "
+                + "Ikkunointi would change the statusLine command in ~/.claude/settings.json to run a small wrapper "
+                + "(~/.config/ikkunointi/claude-statusline.sh).",
+            "Your current status line keeps working as before, and a backup of the settings is saved next to the file. "
+                + "You can undo this any time with “Restore Claude Settings…” in the Ikkunointi menu.",
+        ].joined(separator: "\n\n")
+        alert.addButton(withTitle: "Modify Claude Settings")
+        alert.addButton(withTitle: "Not Now")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        report(claudeHook.install())
+    }
+
+    private func offerClaudeRestore() {
+        let alert = NSAlert()
+        alert.messageText = "Restore Claude Code's settings?"
+        alert.informativeText = "This puts back the status line command you had before and removes Ikkunointi's wrapper. "
+            + "The Claude usage indicator will stop updating."
+        alert.addButton(withTitle: "Restore Claude Settings")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        report(claudeHook.uninstall())
+    }
+
+    private func report(_ outcome: ClaudeStatusLineHook.Outcome) {
+        NSLog("Ikkunointi: Claude settings: %@", "\(outcome)")
+        if case .skipped(let reason) = outcome {
+            let alert = NSAlert()
+            alert.messageText = "Claude Code's settings were not changed"
+            alert.informativeText = reason
+            alert.runModal()
+        }
+        refreshUsage()
     }
 
     /// The limits file is tiny and read every tick; the transcripts only once a minute.
@@ -395,9 +443,14 @@ final class StatusBar: NSObject, NSMenuDelegate {
             button.contentTintColor = nil
             button.title = "–"
             button.toolTip = "Claude usage: no data yet"
-            info("No Claude usage data yet")
-            info("It appears after the next reply in a Claude Code session")
-            info("(needs a Claude subscription plan)")
+            if claudeHook.isInstalled {
+                info("No Claude usage data yet")
+                info("It appears after the next reply in a Claude Code session")
+                info("(needs a Claude subscription plan)")
+            } else {
+                info("Claude usage needs a change to Claude Code's settings")
+                usageMenu.addItem(ClosureMenuItem(title: "Modify Claude Settings…") { [weak self] in self?.offerClaudeSetup() })
+            }
             return
         }
         let text = "\(Int(left.rounded(.down)))%"

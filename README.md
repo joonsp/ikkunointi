@@ -129,12 +129,13 @@ Besides the workspace indicator, the menu bar holds a few utilities. They work e
   and weekly limits). It turns yellow at 25% left, then orange, then red towards 0%.
 
 The Claude number comes from Claude Code, which only exposes it to its status line command.
-While **Show Claude Token Usage** is ticked, Ikkunointi therefore wraps the `statusLine`
-command in `~/.claude/settings.json` with `~/.config/ikkunointi/claude-statusline.sh`. Your
-existing status line keeps working unchanged, and a copy of the settings from before the
-first edit is kept as `~/.claude/settings.json.ikkunointi-backup`. Unticking the menu item
-restores the previous status line. The number updates whenever a Claude Code session
-replies, and needs a Claude subscription plan (Pro, Max, ...).
+To show it, Ikkunointi has to wrap the `statusLine` command in `~/.claude/settings.json`
+with `~/.config/ikkunointi/claude-statusline.sh`. It never does that on its own: it asks
+once on first launch, and **Modify Claude Settings…** in the menu does it later if you said
+no. Your existing status line keeps working unchanged, and a copy of the settings from
+before the first edit is kept as `~/.claude/settings.json.ikkunointi-backup`.
+**Restore Claude Settings…** puts the previous status line back. The number updates
+whenever a Claude Code session replies, and needs a Claude subscription plan (Pro, Max, ...).
 
 ## ikkunointictl
 

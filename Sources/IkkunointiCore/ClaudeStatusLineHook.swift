@@ -3,6 +3,7 @@ import Foundation
 /// Claude Code only hands plan usage (`rate_limits`) to its status line command, so the
 /// usage indicator needs a small wrapper there. This installs it into ~/.claude/settings.json
 /// and takes it out again, keeping whatever status line was configured before.
+/// Never called without the user's explicit go-ahead (the app asks first).
 ///
 /// Layout under the home directory:
 ///   .config/ikkunointi/claude-statusline.sh        the wrapper Claude Code runs
@@ -22,7 +23,7 @@ public struct ClaudeStatusLineHook {
     static let command = #"sh "$HOME/.config/ikkunointi/claude-statusline.sh""#
     static let script = #"""
     #!/bin/sh
-    # Installed by Ikkunointi (menu bar: "Show Claude Token Usage"; untick it to remove this).
+    # Installed by Ikkunointi with your permission (its menu has "Restore Claude Settings" to undo).
     # Saves Claude Code's status line input, which carries the plan's rate limits, for the menu
     # bar indicator, then runs the status line command that was configured before
     # (kept next to this file in claude-statusline.original).
@@ -46,6 +47,16 @@ public struct ClaudeStatusLineHook {
         self.home = home
     }
 
+    /// Claude Code has been used on this machine.
+    public var isClaudeCodePresent: Bool {
+        FileManager.default.fileExists(atPath: home.appendingPathComponent(".claude").path)
+    }
+
+    /// The status line currently runs through our wrapper.
+    public var isInstalled: Bool {
+        ((readSettings()?["statusLine"] as? [String: Any])?["command"] as? String)?.contains(Self.marker) == true
+    }
+
     private func readSettings() -> [String: Any]? {
         guard let data = try? Data(contentsOf: settingsURL) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -65,7 +76,7 @@ public struct ClaudeStatusLineHook {
     @discardableResult
     public func install() -> Outcome {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: home.appendingPathComponent(".claude").path) else { return .skipped("Claude Code is not installed") }
+        guard isClaudeCodePresent else { return .skipped("Claude Code is not installed") }
         var settings: [String: Any] = [:]
         if fm.fileExists(atPath: settingsURL.path) {
             guard let s = readSettings() else { return .skipped("settings.json is not valid JSON") }
