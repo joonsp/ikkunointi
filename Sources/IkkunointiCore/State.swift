@@ -197,6 +197,9 @@ public final class WMState {
         activeWorkspace = active
         for (m, ws) in active { workspace(ws).monitor = m }
         if monitor(focusedMonitor) == nil { focusedMonitor = primaryMonitor.id }
+        // A display went away and took the focused window's workspace off screen: drop the
+        // focus so nothing keeps acting on a parked window. The shell picks a new target.
+        if let f = focusedWindow, let w = windows[f], !isVisible(w.workspace) { focusedWindow = nil }
     }
 
     // MARK: Windows
@@ -267,6 +270,24 @@ public final class WMState {
         guard var w = windows[id], w.isFloating else { return }
         w.floatingFrame = frame
         windows[id] = w
+    }
+
+    /// A floating window was dropped at `frame` by the mouse. If its center is on a monitor
+    /// other than the one showing its workspace, it joins that monitor's workspace (keeping
+    /// the frame). Returns true when it changed workspace.
+    @discardableResult
+    public func dropFloating(_ id: WindowID, frame: CGRect) -> Bool {
+        guard let w = windows[id], w.isFloating else { return false }
+        setFloatingFrame(id, frame)
+        guard let from = monitorShowing(w.workspace),
+              let to = monitors.first(where: { $0.frame.contains(frame.center) }), to.id != from,
+              let ws = activeWorkspace[to.id] else { return false }
+        let wasFocused = focusedWindow == id
+        moveWindow(id, toWorkspace: ws, follow: false)
+        // moveWindow maps the frame proportionally onto the new monitor; keep where it was dropped.
+        setFloatingFrame(id, frame)
+        if wasFocused { noteFocused(id) }
+        return true
     }
 
     // MARK: Focus

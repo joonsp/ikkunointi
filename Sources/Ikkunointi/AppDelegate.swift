@@ -11,6 +11,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
     private let ipc = IPCServer(path: IPC.socketPath)
     private var permissionTimer: Timer?
     private var running = false
+    /// One-time setup that must not repeat when tiling is switched off and on again.
+    private var launchedOnce = false
+    private static let tilingOffKey = "tilingDisabled"
+    private var tilingEnabled: Bool {
+        get { !UserDefaults.standard.bool(forKey: Self.tilingOffKey) }
+        set { UserDefaults.standard.set(!newValue, forKey: Self.tilingOffKey) }
+    }
     private var cleanedUp = false
     private var signalSources: [DispatchSourceSignal] = []
     private var layoutObserver: NSObjectProtocol?
@@ -28,13 +35,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
         tap.delegate = self
         manager.onChange = { [weak self] in self?.statusBar.render() }
         manager.onReloadRequest = { [weak self] in self?.reloadConfig() }
+        statusBar.tilingEnabled = tilingEnabled
+        if tilingEnabled { beginManaging() } else { statusBar.render() }
+    }
 
+    /// Asks for Accessibility if needed, then starts tiling.
+    private func beginManaging() {
         let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         if AXIsProcessTrustedWithOptions(prompt) {
             startManaging()
         } else {
             statusBar.needsPermission = true
             statusBar.render()
+            permissionTimer?.invalidate()
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] timer in
                 guard AXIsProcessTrusted() else { return }
                 timer.invalidate()
@@ -43,12 +56,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
         }
     }
 
+    /// The menu's "Window Tiling" switch. Off leaves only the menu bar utilities running:
+    /// no hotkeys, no Caps Lock remap, no window management.
+    private func setTiling(_ on: Bool) {
+        guard on != tilingEnabled else { return }
+        tilingEnabled = on
+        statusBar.tilingEnabled = on
+        if on {
+            beginManaging()
+        } else {
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+            statusBar.needsPermission = false
+            if running {
+                running = false
+                manager.stop()
+                tap.configure(keys: [:], mouse: [:], superKey: .rcmd, followMouse: false)
+                CapsLockRemap.disable()
+                ipc.stop()
+            }
+        }
+        statusBar.render()
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         cleanup()
     }
 
     private func startManaging() {
-        guard !running else { return }
+        guard !running, tilingEnabled else { return }
         running = true
         statusBar.needsPermission = false
         let config = configStore.load()
@@ -60,23 +96,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
         } catch {
             NSLog("Ikkunointi: IPC disabled: %@", "\(error)")
         }
+        defer { statusBar.render() }
+        guard !launchedOnce else { return }
+        launchedOnce = true
         configStore.onChange = { [weak self] in self?.reloadConfig() }
         configStore.watch()
         layoutObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
+            guard let self, self.running else { return }
             KeyboardLayout.shared.reload()
             self.applyInput(self.manager.config)
         }
         config.execOnce.forEach(Shell.run)
         config.exec.forEach(Shell.run)
-        statusBar.render()
     }
 
     /// The tap can fail right after permission is granted; keep trying.
     private func startTap() {
-        guard !tap.start() else { return }
+        guard running, !tap.start() else { return }
         NSLog("Ikkunointi: could not create the event tap yet; retrying")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.startTap() }
     }
@@ -157,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, EventTapDelegate {
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
         }
         statusBar.onQuit = { NSApp.terminate(nil) }
+        statusBar.onSetTiling = { [weak self] on in self?.setTiling(on) }
     }
 
     // MARK: EventTapDelegate

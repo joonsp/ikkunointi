@@ -45,7 +45,7 @@ struct WorkspaceSummary {
 /// The imperative shell around `WMState`: watches apps through the Accessibility API,
 /// feeds events into the model and applies the resulting placements.
 final class WindowManager {
-    let state = WMState()
+    private(set) var state = WMState()
     private(set) var config = Config()
     private(set) var watchers: [pid_t: AppWatcher] = [:]
     private(set) var records: [CGWindowID: WindowRecord] = [:]
@@ -62,6 +62,7 @@ final class WindowManager {
     private var observers: [NSObjectProtocol] = []
     private var timer: Timer?
     private var started = false
+    var isStarted: Bool { started }
 
     private var pendingSync = Set<pid_t>()
     private var pendingFocusCheck = false
@@ -139,6 +140,33 @@ final class WindowManager {
         for w in watchers.values { w.invalidate() }
     }
 
+    /// Stops managing windows altogether (tiling switched off): puts parked windows back and
+    /// forgets all state, so `start` can run again later.
+    func stop() {
+        guard started else { return }
+        shutdown()
+        for o in observers {
+            NSWorkspace.shared.notificationCenter.removeObserver(o)
+            NotificationCenter.default.removeObserver(o)
+        }
+        observers.removeAll()
+        timer = nil
+        watchers.removeAll()
+        records.removeAll()
+        state = WMState()
+        pendingSync.removeAll()
+        pendingFocusCheck = false
+        pendingWorkspaceSwitch = nil
+        pendingFocusWindow = nil
+        expectedFocus = nil
+        newWindowRequests.removeAll()
+        snapBackHistory.removeAll()
+        drag = nil
+        nativeDragWindow = nil
+        started = false
+        notifyChange()
+    }
+
     private func installObservers() {
         let wnc = NSWorkspace.shared.notificationCenter
         func app(_ n: Notification) -> NSRunningApplication? {
@@ -176,7 +204,7 @@ final class WindowManager {
     }
 
     func addApp(_ app: NSRunningApplication) {
-        guard shouldManage(app), watchers[app.processIdentifier] == nil else { return }
+        guard started, shouldManage(app), watchers[app.processIdentifier] == nil else { return }
         let w = AppWatcher(app: app, manager: self)
         watchers[w.pid] = w
         subscribe(w, attempt: 0)
@@ -336,6 +364,7 @@ final class WindowManager {
     // MARK: Events
 
     func handleAX(_ name: String, element: AXUIElement, watcher w: AppWatcher) {
+        guard started, watchers[w.pid] === w else { return }
         switch name {
         case kAXWindowCreatedNotification:
             scheduleSync(w.pid)
@@ -381,6 +410,8 @@ final class WindowManager {
         if w.isFloating {
             state.setFloatingFrame(id, actual)
             rec.lastActual = actual
+            // Dragged by its title bar: on mouse up it may have landed on another monitor.
+            if NSEvent.pressedMouseButtons & 1 != 0 { nativeDragWindow = id }
             if id == state.focusedWindow { updateBorder(frame: actual) }
             return
         }
@@ -433,6 +464,7 @@ final class WindowManager {
     /// model reflects the latest clicks.
     func flush() {
         updateScheduled = false
+        guard started else { return }
         let pids = pendingSync
         pendingSync.removeAll()
         // Only real focus/activation events may follow a window to another workspace;
@@ -492,7 +524,7 @@ final class WindowManager {
                 expectedFocus = nil
             }
         }
-        if id == state.focusedWindow {
+        if id == state.focusedWindow, state.isVisible(win.workspace) {
             updateBorder()
             return
         }
@@ -550,7 +582,7 @@ final class WindowManager {
 
     /// Hyprland `follow_mouse = 1`: hovering a window focuses it.
     func mouseMoved(to p: CGPoint) {
-        guard config.followMouse, drag == nil, nativeDragWindow == nil, NSEvent.pressedMouseButtons == 0,
+        guard started, config.followMouse, drag == nil, nativeDragWindow == nil, NSEvent.pressedMouseButtons == 0,
               !keysPanel.isOpen else { return }
         let now = Date()
         guard now.timeIntervalSince(lastHoverCheck) > 0.025 else { return }
@@ -716,6 +748,8 @@ final class WindowManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             guard let self else { return }
             self.screenChangeScheduled = false
+            guard self.started else { return }
+            let hadFocus = self.state.focusedWindow != nil
             self.refreshMonitors()
             // macOS may have shoved windows around while displays changed: re-apply everything.
             let placements = self.state.placements()
@@ -723,12 +757,19 @@ final class WindowManager {
                 if rec.isParked, case .hidden(let m)? = placements[rec.id] { self.park(rec, on: m) } else { rec.lastApplied = nil }
             }
             self.applyLayout()
+            // The focused window's display went away (its workspace is now hidden): move focus
+            // to what is still on screen instead of leaving it on a parked window.
+            if hadFocus, self.state.focusedWindow == nil {
+                self.autoFocusGuardUntil = Date() + 1.0
+                self.focus(self.state.focusTarget(for: self.state.focusedWorkspace))
+            }
         }
     }
 
     // MARK: Mouse
 
     func beginDrag(_ action: MouseAction, at point: CGPoint) {
+        guard started else { return }
         flush()
         guard let id = WindowList.windowID(at: point), let rec = records[id], let w = state.windows[id],
               !rec.isParked, let frame = rec.element.frame else { return }
@@ -771,8 +812,8 @@ final class WindowManager {
         guard let rec = records[d.id] else { return }
         if d.floating {
             if let f = rec.element.frame {
-                state.setFloatingFrame(d.id, f)
                 rec.lastActual = f
+                dropFloating(d.id, frame: f)
             }
             updateBorder()
             return
@@ -788,6 +829,13 @@ final class WindowManager {
     func mouseUp(at p: CGPoint) {
         guard let id = nativeDragWindow else { return }
         nativeDragWindow = nil
+        if let rec = records[id], state.windows[id]?.isFloating == true {
+            if let f = rec.element.frame {
+                rec.lastActual = f
+                dropFloating(id, frame: f)
+            }
+            return
+        }
         guard let rec = records[id], let w = state.windows[id], !w.isFloating,
               let target = rec.lastApplied, let actual = rec.element.frame else {
             applyLayout(force: [id])
@@ -801,6 +849,14 @@ final class WindowManager {
             applyLayout(force: [id])
         } else {
             dropTile(id, at: p)
+        }
+    }
+
+    /// A floating window dropped on another monitor joins the workspace shown there.
+    private func dropFloating(_ id: CGWindowID, frame: CGRect) {
+        if state.dropFloating(id, frame: frame) {
+            applyLayout()
+            notifyChange()
         }
     }
 
@@ -823,6 +879,7 @@ final class WindowManager {
     // MARK: Actions
 
     func perform(_ action: Action) {
+        guard started else { return }
         flush()
         inKeyboardAction = true
         defer { inKeyboardAction = false }

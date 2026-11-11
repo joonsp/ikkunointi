@@ -114,6 +114,28 @@ source = ~/.config/ikkunointi/extra.conf
 | `cyclenext` | optional `prev` |
 | `showkeys`, `reload`, `exit` | |
 
+## Menu bar extras
+
+Besides the workspace indicator, the menu bar holds a few utilities. They work even with
+**Window Tiling** unticked in the menu, which turns Ikkunointi into a plain menu bar tool
+(no hotkeys, no Caps Lock remap, no Accessibility permission needed).
+
+- **Compact Workspace Indicator**: show only the focused workspace (and what other displays show).
+- **Coffee cup**: click to keep the screen awake; click again to allow sleep. Off after a restart.
+  With **Keep Awake While Claude Works** ticked it also holds the screen awake by itself
+  whenever a Claude Code agent is busy (its session files were written in the last 5 minutes)
+  and lets the Mac sleep normally once the agent is done.
+- **Claude usage**: percent of your Claude plan limit that is left (the tighter of the 5-hour
+  and weekly limits). It turns yellow at 25% left, then orange, then red towards 0%.
+
+The Claude number comes from Claude Code, which only exposes it to its status line command.
+While **Show Claude Token Usage** is ticked, Ikkunointi therefore wraps the `statusLine`
+command in `~/.claude/settings.json` with `~/.config/ikkunointi/claude-statusline.sh`. Your
+existing status line keeps working unchanged, and a copy of the settings from before the
+first edit is kept as `~/.claude/settings.json.ikkunointi-backup`. Unticking the menu item
+restores the previous status line. The number updates whenever a Claude Code session
+replies, and needs a Claude subscription plan (Pro, Max, ...).
+
 ## ikkunointictl
 
 ```sh

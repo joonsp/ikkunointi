@@ -11,6 +11,29 @@ final class StatusBar: NSObject, NSMenuDelegate {
     /// Separate click-to-toggle button: the main item's click is taken by the menu.
     private let awakeItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var awakeAssertion: IOPMAssertionID?
+    /// Switched on by hand (cup click); never persisted.
+    private var manualAwake = false
+    /// "Keep Awake While Claude Works": hold the screen awake only while an agent is busy.
+    private var agentWorking = false
+    private var agentTimer: Timer?
+    private static let awakeAutoKey = "awakeWhileClaudeWorks"
+    private var awakeAuto: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.awakeAutoKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.awakeAutoKey) }
+    }
+    /// Claude Code token usage, read from the local session transcripts.
+    private let usageItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let usageMenu = NSMenu()
+    private let usageScanner = ClaudeUsageScanner()
+    private let usageQueue = DispatchQueue(label: "ikkunointi.claude-usage", qos: .utility)
+    private var usageTimer: Timer?
+    private var usageTick = 0
+    private var tokensToday: TokenUsage?
+    private static let hideUsageKey = "hideClaudeUsage"
+    private var showUsage: Bool {
+        get { !UserDefaults.standard.bool(forKey: Self.hideUsageKey) }
+        set { UserDefaults.standard.set(!newValue, forKey: Self.hideUsageKey) }
+    }
     private static let compactKey = "compactIndicator"
     private var compact: Bool {
         get { UserDefaults.standard.bool(forKey: Self.compactKey) }
@@ -20,6 +43,9 @@ final class StatusBar: NSObject, NSMenuDelegate {
     var summaries: () -> [WorkspaceSummary] = { [] }
     var issues: () -> (errors: [ConfigIssue], warnings: [ConfigIssue]) = { ([], []) }
     var needsPermission = false
+    /// False when the user switched window tiling off: only the menu bar utilities remain.
+    var tilingEnabled = true
+    var onSetTiling: ((Bool) -> Void)?
     var onSwitchWorkspace: ((Int) -> Void)?
     var onShowKeys: (() -> Void)?
     var onEditConfig: (() -> Void)?
@@ -37,7 +63,19 @@ final class StatusBar: NSObject, NSMenuDelegate {
         awakeItem.autosaveName = "IkkunointiKeepAwake"
         awakeItem.button?.target = self
         awakeItem.button?.action = #selector(toggleAwake)
-        renderAwake()
+        applyAwakeAuto()
+        usageItem.autosaveName = "IkkunointiClaudeUsage"
+        usageMenu.autoenablesItems = false
+        usageItem.menu = usageMenu
+        if let button = usageItem.button {
+            let image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Claude token usage")
+            image?.isTemplate = true
+            button.image = image
+            button.imagePosition = .imageLeading
+            button.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+            button.title = "…"
+        }
+        applyUsageVisibility()
         render()
     }
 
@@ -61,9 +99,17 @@ final class StatusBar: NSObject, NSMenuDelegate {
         }
         button.title = ""
         button.imagePosition = .imageOnly
+        if !tilingEnabled {
+            let image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "Ikkunointi (tiling off)")
+            image?.isTemplate = true
+            button.image = image
+            button.toolTip = "Ikkunointi: window tiling is off"
+            return
+        }
         let alert = !issues().errors.isEmpty || Self.secureInputApp != nil
-        // Compact: only the focused workspace, for narrow (notched) menu bars.
-        let shown = compact ? summaries().filter(\.isFocused) : summaries()
+        // Compact, for narrow (notched) menu bars: the focused workspace plus whatever
+        // the other displays are showing.
+        let shown = compact ? summaries().filter { $0.isFocused || $0.isVisible } : summaries()
         button.image = Self.image(for: shown, alert: alert)
         button.toolTip = Self.secureInputApp.map { "Secure input is on (\($0)): hotkeys are paused" }
     }
@@ -111,40 +157,62 @@ final class StatusBar: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
         menu.removeAllItems()
+        let tiling = tilingEnabled && !needsPermission
         if needsPermission {
-            addInfo("Ikkunointi needs Accessibility access")
+            addInfo("Ikkunointi needs Accessibility access to tile windows")
             add("Open Accessibility Settings…") { [weak self] in self?.onOpenAccessibility?() }
             menu.addItem(.separator())
-            add("Quit Ikkunointi") { [weak self] in self?.onQuit?() }
-            return
-        }
-        for ws in summaries() {
-            let apps = ws.apps.isEmpty ? "empty" : ws.apps.joined(separator: ", ")
-            let item = add("\(ws.id)   \(apps)") { [weak self] in self?.onSwitchWorkspace?(ws.id) }
-            item.state = ws.isFocused ? .on : .off
-        }
-        menu.addItem(.separator())
-        if let app = Self.secureInputApp {
-            addInfo("⚠︎ Secure input is on (\(app)): hotkeys paused")
+        } else if tiling {
+            for ws in summaries() {
+                let apps = ws.apps.isEmpty ? "empty" : ws.apps.joined(separator: ", ")
+                let item = add("\(ws.id)   \(apps)") { [weak self] in self?.onSwitchWorkspace?(ws.id) }
+                item.state = ws.isFocused ? .on : .off
+            }
             menu.addItem(.separator())
+            if let app = Self.secureInputApp {
+                addInfo("⚠︎ Secure input is on (\(app)): hotkeys paused")
+                menu.addItem(.separator())
+            }
         }
-        let compactItem = add("Compact Workspace Indicator") { [weak self] in
+        let tilingItem = add("Window Tiling") { [weak self] in
             guard let self else { return }
-            self.compact.toggle()
-            self.render()
+            self.onSetTiling?(!self.tilingEnabled)
         }
-        compactItem.state = compact ? .on : .off
+        tilingItem.state = tilingEnabled ? .on : .off
+        if tiling {
+            let compactItem = add("Compact Workspace Indicator") { [weak self] in
+                guard let self else { return }
+                self.compact.toggle()
+                self.render()
+            }
+            compactItem.state = compact ? .on : .off
+        }
         let awake = add("Keep Screen Awake") { [weak self] in self?.toggleAwake() }
-        awake.state = awakeAssertion != nil ? .on : .off
-        menu.addItem(.separator())
-        add("Show Key Bindings") { [weak self] in self?.onShowKeys?() }
-        add("Edit Config…") { [weak self] in self?.onEditConfig?() }
-        add("Reveal Config in Finder") { [weak self] in self?.onRevealConfig?() }
-        add("Reload Config") { [weak self] in self?.onReload?() }
-        let (errors, warnings) = issues()
-        if !errors.isEmpty { addIssues("⚠︎ \(errors.count) config error\(errors.count == 1 ? "" : "s")", errors) }
-        if !warnings.isEmpty { addIssues("\(warnings.count) config warning\(warnings.count == 1 ? "" : "s")", warnings) }
+        awake.state = manualAwake ? .on : .off
+        let auto = add("Keep Awake While Claude Works") { [weak self] in
+            guard let self else { return }
+            self.awakeAuto.toggle()
+            self.applyAwakeAuto()
+        }
+        auto.state = awakeAuto ? .on : .off
+        let usage = add("Show Claude Token Usage") { [weak self] in
+            guard let self else { return }
+            self.showUsage.toggle()
+            self.applyUsageVisibility()
+        }
+        usage.state = showUsage ? .on : .off
+        if tiling {
+            menu.addItem(.separator())
+            add("Show Key Bindings") { [weak self] in self?.onShowKeys?() }
+            add("Edit Config…") { [weak self] in self?.onEditConfig?() }
+            add("Reveal Config in Finder") { [weak self] in self?.onRevealConfig?() }
+            add("Reload Config") { [weak self] in self?.onReload?() }
+            let (errors, warnings) = issues()
+            if !errors.isEmpty { addIssues("⚠︎ \(errors.count) config error\(errors.count == 1 ? "" : "s")", errors) }
+            if !warnings.isEmpty { addIssues("\(warnings.count) config warning\(warnings.count == 1 ? "" : "s")", warnings) }
+        }
         menu.addItem(.separator())
         let login = add("Launch at Login") { [weak self] in self?.toggleLaunchAtLogin() }
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -177,19 +245,57 @@ final class StatusBar: NSObject, NSMenuDelegate {
         return item
     }
 
-    /// Holds a power assertion that blocks idle display sleep (and with it idle system sleep).
-    /// Never persisted: always off after a restart, and the kernel drops it if the app exits.
+    /// The cup: keep the screen awake until clicked again. Never persisted.
     @objc private func toggleAwake() {
-        if let id = awakeAssertion {
-            IOPMAssertionRelease(id)
-            awakeAssertion = nil
-        } else {
+        manualAwake.toggle()
+        updateAwake()
+    }
+
+    /// Starts or stops watching for agent activity.
+    private func applyAwakeAuto() {
+        agentTimer?.invalidate()
+        agentTimer = nil
+        agentWorking = false
+        if awakeAuto {
+            checkAgent()
+            let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.checkAgent() }
+            RunLoop.main.add(t, forMode: .common)
+            agentTimer = t
+        }
+        updateAwake()
+    }
+
+    private func checkAgent() {
+        usageQueue.async { [weak self] in
+            let working = ClaudeActivity.isWorking()
+            DispatchQueue.main.async {
+                guard let self, self.awakeAuto, self.agentWorking != working else { return }
+                self.agentWorking = working
+                self.updateAwake()
+            }
+        }
+    }
+
+    /// Holds a power assertion that blocks idle display sleep (and with it idle system sleep)
+    /// while the cup is on, or while an agent works in automatic mode. The kernel drops it
+    /// if the app exits.
+    private func updateAwake() {
+        let want = manualAwake || (awakeAuto && agentWorking)
+        if want, awakeAssertion == nil {
             var id = IOPMAssertionID(0)
             let result = IOPMAssertionCreateWithName(
                 kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                 IOPMAssertionLevel(kIOPMAssertionLevelOn),
                 "Ikkunointi: keep screen awake" as CFString, &id)
-            if result == kIOReturnSuccess { awakeAssertion = id } else { NSSound.beep() }
+            if result == kIOReturnSuccess {
+                awakeAssertion = id
+            } else {
+                manualAwake = false
+                NSSound.beep()
+            }
+        } else if !want, let id = awakeAssertion {
+            IOPMAssertionRelease(id)
+            awakeAssertion = nil
         }
         renderAwake()
     }
@@ -197,7 +303,16 @@ final class StatusBar: NSObject, NSMenuDelegate {
     private func renderAwake() {
         guard let button = awakeItem.button else { return }
         let on = awakeAssertion != nil
-        let label = on ? "Screen stays awake (click to allow sleep)" : "Keep screen awake"
+        let label: String
+        if manualAwake {
+            label = "Screen stays awake (click to allow sleep)"
+        } else if on {
+            label = "Screen stays awake while Claude Code is working"
+        } else if awakeAuto {
+            label = "Screen will stay awake while Claude Code works (click to keep it awake now)"
+        } else {
+            label = "Keep screen awake"
+        }
         if let image = NSImage(systemSymbolName: on ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: label) {
             image.isTemplate = true
             button.image = image
@@ -206,8 +321,105 @@ final class StatusBar: NSObject, NSMenuDelegate {
             button.image = nil
             button.title = "☕"
         }
-        button.appearsDisabled = !on
+        // Dimmed: off. Outline: armed, waiting for an agent. Filled: holding the screen awake.
+        button.appearsDisabled = !on && !awakeAuto
         button.toolTip = label
+    }
+
+    private func applyUsageVisibility() {
+        usageItem.isVisible = showUsage
+        usageTimer?.invalidate()
+        usageTimer = nil
+        // The indicator's data comes through a wrapper around Claude Code's status line;
+        // it is set up and removed together with the indicator.
+        let show = showUsage
+        usageQueue.async {
+            let hook = ClaudeStatusLineHook()
+            let outcome = show ? hook.install() : hook.uninstall()
+            NSLog("Ikkunointi: Claude status line hook: %@", "\(outcome)")
+        }
+        guard showUsage else { return }
+        usageTick = 0
+        refreshUsage()
+        let t = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.refreshUsage() }
+        RunLoop.main.add(t, forMode: .common)
+        usageTimer = t
+    }
+
+    /// The limits file is tiny and read every tick; the transcripts only once a minute.
+    private func refreshUsage() {
+        let now = Date()
+        let scanTokens = usageTick % 6 == 0
+        usageTick += 1
+        usageQueue.async { [weak self] in
+            guard let self else { return }
+            var limits = (try? Data(contentsOf: PlanLimits.fileURL)).flatMap(PlanLimits.parse)
+            if limits?.updated == nil {
+                limits?.updated = (try? PlanLimits.fileURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            }
+            var today: TokenUsage?
+            if scanTokens {
+                let midnight = Calendar.current.startOfDay(for: now)
+                today = ClaudeUsage.total(self.usageScanner.scan(since: midnight), since: midnight)
+            }
+            DispatchQueue.main.async {
+                if let today { self.tokensToday = today }
+                self.renderUsage(limits, now: now)
+            }
+        }
+    }
+
+    /// Normal above 25% left, then yellow through orange to red at 0%.
+    private static func usageColor(left: Double) -> NSColor? {
+        guard left <= 25 else { return nil }
+        let t = CGFloat((25 - max(0, left)) / 12.5)   // 0 at 25%, 1 at 12.5%, 2 at 0%
+        return t <= 1 ? NSColor.systemYellow.blended(withFraction: t, of: .systemOrange)
+                      : NSColor.systemOrange.blended(withFraction: t - 1, of: .systemRed)
+    }
+
+    private func renderUsage(_ limits: PlanLimits?, now: Date) {
+        usageMenu.removeAllItems()
+        func info(_ title: String) {
+            let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            i.isEnabled = false
+            usageMenu.addItem(i)
+        }
+        defer {
+            if let t = tokensToday {
+                usageMenu.addItem(.separator())
+                info("Tokens today on this Mac: \(ClaudeUsage.format(t.fresh))")
+            }
+        }
+        guard let button = usageItem.button else { return }
+        guard let limits, let left = limits.lowestLeft(at: now) else {
+            button.contentTintColor = nil
+            button.title = "–"
+            button.toolTip = "Claude usage: no data yet"
+            info("No Claude usage data yet")
+            info("It appears after the next reply in a Claude Code session")
+            info("(needs a Claude subscription plan)")
+            return
+        }
+        let text = "\(Int(left.rounded(.down)))%"
+        let color = Self.usageColor(left: left)
+        button.contentTintColor = color
+        var attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: color == nil ? .medium : .bold)]
+        if let color { attrs[.foregroundColor] = color }
+        button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+        button.toolTip = "Claude usage left"
+        let times = DateFormatter()
+        times.dateFormat = "EEE HH:mm"
+        func line(_ name: String, _ w: LimitWindow?) {
+            guard let w else { return }
+            let reset = now >= w.resetsAt ? "has reset" : "resets \(times.string(from: w.resetsAt))"
+            info("\(name): \(Int(w.left(at: now).rounded(.down)))% left · \(reset)")
+        }
+        line("5-hour limit", limits.fiveHour)
+        line("Weekly limit", limits.sevenDay)
+        if let updated = limits.updated {
+            let minutes = Int(now.timeIntervalSince(updated) / 60)
+            info(minutes < 1 ? "Updated just now" : "Updated \(minutes) min ago (refreshes while Claude Code runs)")
+        }
     }
 
     private func toggleLaunchAtLogin() {

@@ -185,6 +185,33 @@ final class StateTests: XCTestCase {
         XCTAssertEqual(frame(s, 20), side.visibleFrame)
     }
 
+    func testMonitorUnplugDropsFocusOnHiddenWindow() {
+        let s = makeState([main, side])
+        s.addWindow(10, pid: 1, floating: false, workspace: 1)
+        s.addWindow(20, pid: 1, floating: false, workspace: 2)
+        s.noteFocused(20)
+        s.setMonitors([main])
+        XCTAssertNil(s.focusedWindow)
+        XCTAssertEqual(s.focusTarget(for: s.focusedWorkspace), .window(10))
+    }
+
+    func testFloatingDroppedOnOtherMonitorJoinsItsWorkspace() {
+        let s = makeState([main, side])
+        s.addWindow(10, pid: 1, floating: true, workspace: 1, frame: CGRect(x: 100, y: 100, width: 200, height: 100))
+        s.noteFocused(10)
+        let dropped = CGRect(x: 1200, y: 100, width: 200, height: 100)
+        XCTAssertTrue(s.dropFloating(10, frame: dropped))
+        XCTAssertEqual(s.windows[10]?.workspace, 2)
+        XCTAssertEqual(s.placements()[10], .floating(dropped))
+        XCTAssertEqual(s.focusedWindow, 10)
+        XCTAssertEqual(s.focusedMonitor, 2)
+        // Still visible after the first monitor switches workspace.
+        _ = s.switchToWorkspace(3, on: 1)
+        XCTAssertEqual(s.placements()[10], .floating(dropped))
+        // Moving within the same monitor changes nothing but the frame.
+        XCTAssertFalse(s.dropFloating(10, frame: dropped.offsetBy(dx: 50, dy: 0)))
+    }
+
     func testCycle() {
         let s = makeState()
         for id: WindowID in [10, 11, 12] { s.addWindow(id, pid: 1, floating: false) }
