@@ -176,3 +176,8 @@ swift build                # debug build of all targets
 ## Uninstall
 
 Quit Ikkunointi and delete the app. Remove "Ikkunointi Local Signing" in Keychain Access, then delete `~/.config/ikkunointi`.
+
+## License
+
+MIT with the [Commons Clause](https://commonsclause.com/): free to use, modify and share,
+including at work, but not to sell. See [LICENSE](LICENSE).
