@@ -115,6 +115,17 @@ final class ScrollingStateTests: XCTestCase {
         XCTAssertEqual(f.width, 500)                               // back to the dwindle tile
     }
 
+    func testToggleSplitIsIgnoredWhileScrolling() {
+        let s = WMState(gapsIn: 0, gapsOut: 0)
+        s.setMonitors([main])
+        open(s, 1); open(s, 2)
+        let before = s.placements()
+        s.toggleLayout(1)
+        s.toggleSplit(2)
+        s.toggleLayout(1)
+        XCTAssertEqual(s.placements(), before)
+    }
+
     func testRemovingAndMovingKeepStripInSync() {
         let s = makeScrolling()
         open(s, 1); open(s, 2); open(s, 3)

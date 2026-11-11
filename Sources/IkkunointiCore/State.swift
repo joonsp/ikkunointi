@@ -418,7 +418,11 @@ public final class WMState {
 
     public func toggleSplit(_ id: WindowID) {
         guard let w = windows[id], !w.isFloating else { return }
-        workspace(w.workspace).tree.toggleSplit(id)
+        let ws = workspace(w.workspace)
+        // Scrolling columns have no splits; flipping the hidden dwindle tree would only
+        // surprise on the next togglelayout.
+        guard layout(of: ws) == .dwindle else { return }
+        ws.tree.toggleSplit(id)
     }
 
     public func resizeTiled(_ id: WindowID, dx: CGFloat, dy: CGFloat) {
