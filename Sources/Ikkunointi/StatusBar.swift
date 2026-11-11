@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import IOKit.pwr_mgt
 import IkkunointiCore
 import ServiceManagement
 
@@ -7,6 +8,14 @@ import ServiceManagement
 final class StatusBar: NSObject, NSMenuDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
+    /// Separate click-to-toggle button: the main item's click is taken by the menu.
+    private let awakeItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private var awakeAssertion: IOPMAssertionID?
+    private static let compactKey = "compactIndicator"
+    private var compact: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.compactKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.compactKey) }
+    }
 
     var summaries: () -> [WorkspaceSummary] = { [] }
     var issues: () -> (errors: [ConfigIssue], warnings: [ConfigIssue]) = { ([], []) }
@@ -25,6 +34,10 @@ final class StatusBar: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         item.menu = menu
         item.button?.imagePosition = .imageOnly
+        awakeItem.autosaveName = "IkkunointiKeepAwake"
+        awakeItem.button?.target = self
+        awakeItem.button?.action = #selector(toggleAwake)
+        renderAwake()
         render()
     }
 
@@ -49,7 +62,9 @@ final class StatusBar: NSObject, NSMenuDelegate {
         button.title = ""
         button.imagePosition = .imageOnly
         let alert = !issues().errors.isEmpty || Self.secureInputApp != nil
-        button.image = Self.image(for: summaries(), alert: alert)
+        // Compact: only the focused workspace, for narrow (notched) menu bars.
+        let shown = compact ? summaries().filter(\.isFocused) : summaries()
+        button.image = Self.image(for: shown, alert: alert)
         button.toolTip = Self.secureInputApp.map { "Secure input is on (\($0)): hotkeys are paused" }
     }
 
@@ -114,6 +129,15 @@ final class StatusBar: NSObject, NSMenuDelegate {
             addInfo("⚠︎ Secure input is on (\(app)): hotkeys paused")
             menu.addItem(.separator())
         }
+        let compactItem = add("Compact Workspace Indicator") { [weak self] in
+            guard let self else { return }
+            self.compact.toggle()
+            self.render()
+        }
+        compactItem.state = compact ? .on : .off
+        let awake = add("Keep Screen Awake") { [weak self] in self?.toggleAwake() }
+        awake.state = awakeAssertion != nil ? .on : .off
+        menu.addItem(.separator())
         add("Show Key Bindings") { [weak self] in self?.onShowKeys?() }
         add("Edit Config…") { [weak self] in self?.onEditConfig?() }
         add("Reveal Config in Finder") { [weak self] in self?.onRevealConfig?() }
@@ -151,6 +175,39 @@ final class StatusBar: NSObject, NSMenuDelegate {
         let item = ClosureMenuItem(title: title, handler: handler)
         menu.addItem(item)
         return item
+    }
+
+    /// Holds a power assertion that blocks idle display sleep (and with it idle system sleep).
+    /// Never persisted: always off after a restart, and the kernel drops it if the app exits.
+    @objc private func toggleAwake() {
+        if let id = awakeAssertion {
+            IOPMAssertionRelease(id)
+            awakeAssertion = nil
+        } else {
+            var id = IOPMAssertionID(0)
+            let result = IOPMAssertionCreateWithName(
+                kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Ikkunointi: keep screen awake" as CFString, &id)
+            if result == kIOReturnSuccess { awakeAssertion = id } else { NSSound.beep() }
+        }
+        renderAwake()
+    }
+
+    private func renderAwake() {
+        guard let button = awakeItem.button else { return }
+        let on = awakeAssertion != nil
+        let label = on ? "Screen stays awake (click to allow sleep)" : "Keep screen awake"
+        if let image = NSImage(systemSymbolName: on ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: label) {
+            image.isTemplate = true
+            button.image = image
+            button.title = ""
+        } else {
+            button.image = nil
+            button.title = "☕"
+        }
+        button.appearsDisabled = !on
+        button.toolTip = label
     }
 
     private func toggleLaunchAtLogin() {
